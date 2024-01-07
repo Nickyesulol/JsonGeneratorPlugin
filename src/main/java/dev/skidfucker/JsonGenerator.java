@@ -3,22 +3,18 @@ package dev.skidfucker;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import dev.skidfucker.util.Artifact;
-import dev.skidfucker.util.HttpUtil;
-import dev.skidfucker.util.JsonUtil;
+import dev.skidfucker.util.*;
 
 import java.io.File;
-import java.net.URL;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.*;
 
 public final class JsonGenerator {
 
     private static final boolean DEBUG_MODE = JsonGeneratorPlugin.DEBUG;
-    
+    private static final ExecutorService service = Executors.newVirtualThreadPerTaskExecutor();
     public static final String VERSION_MANIFEST_URL = "https://launchermeta.mojang.com/mc/game/version_manifest.json";
     public static final String FILE_NAME = "./test.json";
 
@@ -30,12 +26,12 @@ public final class JsonGenerator {
         this.typeOfRelease = typeOfRelease;
     }
 
-    public void run(ConcurrentHashMap<Artifact, Map.Entry<File, URL>> dependencies) {
+    public void run(CopyOnWriteArrayList<BetterArtifact> betterArtifacts) {
         final JsonObject manifastJson = HttpUtil.downloadJson(VERSION_MANIFEST_URL);
         final JsonArray versions = manifastJson.getAsJsonArray("versions");
 
 
-        this.debugJsonArrayPrinter(versions);
+//        this.debugJsonArrayPrinter(versions);
         
         String pistonUrl = this.selectVersion(versions, typeOfRelease, version);
 
@@ -54,9 +50,66 @@ public final class JsonGenerator {
 
         JsonArray libraries = selectedJson.getAsJsonArray("libraries");
 
-        this.debugJsonArrayPrinter(libraries);
+//        this.debugJsonArrayPrinter(libraries);
+
+        final CopyOnWriteArrayList<BestArtifact> bestArtifacts = new CopyOnWriteArrayList<>();
+
+        for (final BetterArtifact betterArtifact : betterArtifacts) {
+            CompletableFuture.supplyAsync(() -> {
+                try {
+                    return new InformationRetriever(betterArtifact).call();
+                } catch (Exception e) {
+                    throw new RuntimeException(e);
+                }
+            }, service).thenAccept(bestArtifacts::add);
+        }
 
 
+        for (final BestArtifact artifact : bestArtifacts) {
+            System.out.println(artifact.sha1());
+        }
+
+/*
+        service.shutdown();
+
+        try {
+            if (!(service.awaitTermination(5, TimeUnit.MINUTES))) {
+                System.err.println("Tasks haven't been finished in time, aborting!");
+                return;
+            }
+        } catch (InterruptedException e) {
+            System.err.println("Failed executing all tasks, aborting!");
+            return;
+        }*/
+
+
+        for (final BestArtifact bestArtifact : bestArtifacts) {
+            JsonObject customDependency = new JsonObject();
+            JsonObject downloads = new JsonObject();
+            JsonObject artifact = new JsonObject();
+
+            customDependency.addProperty("name", bestArtifact.betterArtifact().artifact().name());
+
+            Artifact artifact1 = bestArtifact.betterArtifact().artifact();
+
+            artifact.addProperty("sha1", bestArtifact.sha1());
+            artifact.addProperty("size", bestArtifact.size());
+            artifact.addProperty("url", bestArtifact.betterArtifact().url().toString());
+            artifact.addProperty("path", artifact1.group().replace('.', '/') + "/" + artifact1.name() + "/" + artifact1.version() + "/" + artifact1.name() + "-" + artifact1.version() + "." + artifact1.extension());
+            downloads.add("artifact", artifact);
+
+            customDependency.add("downloads", downloads);
+            libraries.add(customDependency);
+        }
+
+        selectedJson.add("libraries", libraries);
+
+        clientJson = JsonUtil.writeJsonToFile(selectedJson.toString(), clientJson.toPath());
+
+        if (DEBUG_MODE) {
+            String lmao = JsonUtil.prettyFormatPrint(selectedJson);
+            clientJson = JsonUtil.writeJsonToFile(lmao, clientJson.toPath());
+        }
         //TODO: implement logic
        /* for (final String dependency : namesOrgVer) {
             JsonObject customDependency = new JsonObject();

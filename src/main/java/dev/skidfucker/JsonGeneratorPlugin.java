@@ -1,6 +1,8 @@
 package dev.skidfucker;
 
 import dev.skidfucker.util.Artifact;
+import dev.skidfucker.util.BetterArtifact;
+import dev.skidfucker.util.URLRetriever;
 import org.gradle.api.Plugin;
 import org.gradle.api.Project;
 import org.gradle.api.artifacts.Configuration;
@@ -16,27 +18,23 @@ import java.net.URISyntaxException;
 import java.net.URL;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
 
 public final class JsonGeneratorPlugin implements Plugin<Project> {
 
-    public static boolean DEBUG = true;
-
     private static final ExecutorService service = Executors.newVirtualThreadPerTaskExecutor();
-    private static final ConcurrentHashMap<Artifact, Map.Entry<File, URL>> dependencies = new ConcurrentHashMap<>();
+    private static final CopyOnWriteArrayList<BetterArtifact> dependencies = new CopyOnWriteArrayList<>();
+    public static boolean DEBUG = true;
     private final HashMap<Artifact, File> dependenciesAndFiles = new HashMap<>();
 
     @Override
     public void apply(Project project) {
         /*
-        * TODO:
-        *  implement hashing file and getting Size in bytes
-        *  implement comments explaining features
-        *  implement writing to json file
-        */
+         * TODO:
+         *  implement hashing file and getting Size in bytes
+         *  implement comments explaining features
+         *  implement writing to json file
+         */
         project.task("generateJson", task -> {
             task.setGroup("client");
             task.doLast(t -> {
@@ -113,31 +111,44 @@ public final class JsonGeneratorPlugin implements Plugin<Project> {
                 if (repo.getUrl().toString().startsWith("file")) return;
                 if (DEBUG) System.out.println(repo.getUrl());
 
-                for (final Artifact artifact : dependenciesAndFiles.keySet()) {
-                    service.submit(() -> {
-                        String potentialUrl = repo.getUrl() + "/" + artifact.group().replace('.', '/') + "/" + artifact.name() + "/" + artifact.version() + "/" + artifact.name() + "-" + artifact.version() + "." + artifact.extension();
-                        try {
-                            URL url = new URI(potentialUrl).toURL();
-                            url.openStream().close();
-                            validUrls.put(artifact, url);
-                        } catch (IOException | URISyntaxException e) {
-                            if (DEBUG) {
-                                System.out.println("URL failed: " + potentialUrl);
-                            }
-                        }
-                    });
-                }
-                service.shutdown();
 
-                try {
-                    if (!(service.awaitTermination(3, TimeUnit.MINUTES))) {
-                        System.err.println("Tasks haven't been finished in time, aborting!");
-                        return;
-                    }
-                } catch (InterruptedException e) {
-                    System.err.println("Failed executing all tasks, aborting!");
-                    return;
+                final ConcurrentHashMap<Artifact, CompletableFuture<URL>> futures = new ConcurrentHashMap<>();
+
+                for (final Artifact artifact : dependenciesAndFiles.keySet()) {
+                    CompletableFuture<URL> future = CompletableFuture.supplyAsync(() -> {
+                        try {
+                            return new URLRetriever(artifact, repo).call();
+                        } catch (Exception e) {
+                            throw new RuntimeException(e);
+                        }
+                    }, service);
+                    futures.put(artifact, future);
                 }
+
+                // Wait for all futures to complete
+                CompletableFuture.allOf(futures.values().toArray(new CompletableFuture[0])).join();
+
+                // Add the URLs to validUrls
+                for (Map.Entry<Artifact, CompletableFuture<URL>> entry : futures.entrySet()) {
+                    try {
+                        URL url = entry.getValue().get();
+                        if (url != null) {
+                            validUrls.put(entry.getKey(), url);
+                        }
+                    } catch (InterruptedException | ExecutionException e) {
+                        throw new RuntimeException(e);
+                    }
+                }
+//                service.shutdown();
+//                try {
+//                    if (!(service.awaitTermination(3, TimeUnit.MINUTES))) {
+//                        System.err.println("Tasks haven't been finished in time, aborting!");
+//                        return;
+//                    }
+//                } catch (InterruptedException e) {
+//                    System.err.println("Failed executing all tasks, aborting!");
+//                    return;
+//                }
             }
         });
 
@@ -145,7 +156,7 @@ public final class JsonGeneratorPlugin implements Plugin<Project> {
             if (!validUrls.containsKey(artifact)) {
                 dependenciesAndFiles.remove(artifact);
             } else {
-                dependencies.put(artifact, Map.entry(dependenciesAndFiles.get(artifact), validUrls.get(artifact)));
+                dependencies.add(new BetterArtifact(artifact, validUrls.get(artifact), dependenciesAndFiles.get(artifact)));
             }
         }
     }
@@ -168,7 +179,6 @@ public final class JsonGeneratorPlugin implements Plugin<Project> {
             if (DEBUG) {
                 System.out.println("Resolved Dependency: " + resolvedDependency.getModuleGroup() + ":" + resolvedDependency.getModuleName() + ":" + resolvedDependency.getModuleVersion());
             }
-
 
 
             for (ResolvedArtifact artifact : resolvedDependency.getAllModuleArtifacts()) {

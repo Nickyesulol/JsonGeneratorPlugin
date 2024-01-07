@@ -7,7 +7,7 @@ plugins {
 }
 
 jsonGenerator {
-    excludedDependencies = listOf("com.google.code.gson:gson")
+    excludedDependencies = listOf("com.google.code.gson:gson:2.10.1")
 }
 
 group = "dev.skidfucker"
@@ -19,9 +19,8 @@ repositories {
 }
 
 dependencies {
-    implementation("com.google.code.gson:gson:2.10.1");
-//    implementation("org.projectlombok:lombok:1.18.30")
-    implementation(gradleApi())
+    api("com.google.code.gson:gson:2.10.1");
+    api(gradleApi())
     testImplementation(gradleTestKit())
     testImplementation(platform("org.junit:junit-bom:5.9.1"))
     testImplementation("org.junit.jupiter:junit-jupiter")

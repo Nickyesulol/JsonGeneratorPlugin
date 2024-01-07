@@ -12,12 +12,11 @@ import org.gradle.api.artifacts.ResolvedDependency;
 import org.gradle.api.artifacts.repositories.MavenArtifactRepository;
 
 import java.io.File;
-import java.io.IOException;
-import java.net.URI;
-import java.net.URISyntaxException;
 import java.net.URL;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.*;
 
 public final class JsonGeneratorPlugin implements Plugin<Project> {
@@ -31,10 +30,16 @@ public final class JsonGeneratorPlugin implements Plugin<Project> {
     public void apply(Project project) {
         /*
          * TODO:
-         *  implement hashing file and getting Size in bytes
+         *  setup file name of project and custom project
          *  implement comments explaining features
-         *  implement writing to json file
          */
+        final String rootProjectName = project.getRootProject().getName();
+        final JsonGeneratorPluginExtension extension = project.getExtensions()
+                .create("jsonGenerator", JsonGeneratorPluginExtension.class);
+
+        extension.getExcludedDependencies().convention(List.of());
+        extension.getFileName().convention(rootProjectName);
+
         project.task("generateJson", task -> {
             task.setGroup("client");
             task.doLast(t -> {
@@ -42,20 +47,41 @@ public final class JsonGeneratorPlugin implements Plugin<Project> {
                 final String[] properties = determineProperties(project, exists);
                 final String typeOfRelease = properties[0];
                 final String version = properties[1];
-
                 try {
                     DEBUG = Boolean.parseBoolean(properties[2]);
                 } catch (Exception e) {
                     System.err.println("Invalid argument option for json.generator.Debug, falling back to default!");
                     DEBUG = false;
                 }
+                boolean wipeLjwgl;
+                try {
+                    wipeLjwgl = Boolean.parseBoolean(properties[3]);
+                } catch (Exception e) {
+                    System.err.println("Invalid argument option for json.generator.WipeLwjgl, falling back to default!");
+                    wipeLjwgl = false;
+                }
+                boolean wipeLibraries;
+                try {
+                    wipeLibraries = Boolean.parseBoolean(properties[4]);
+                } catch (Exception e) {
+                    System.err.println("Invalid argument option for json.generator.WipeLibraries, falling back to default!");
+                    wipeLibraries = false;
+                }
+                boolean prettyPrint;
+                try {
+                    prettyPrint = Boolean.parseBoolean(properties[5]);
+                } catch (Exception e) {
+                    System.err.println("Invalid argument option for json.generator.PrettyPrint, falling back to default!");
+                    prettyPrint = false;
+                }
 
-                project.getConfigurations().all(this::execute);
+                project.getConfigurations().all(configuration -> this.execute(configuration, extension.getExcludedDependencies().get()));
 
                 resolveRepositories(project);
+                final String projectVersion = project.getVersion().toString();
+                final String fileName = extension.getFileName().get() + "-" + projectVersion;
 
-
-                JsonGenerator generator = new JsonGenerator(version, typeOfRelease);
+                final JsonGenerator generator = new JsonGenerator(fileName, version, typeOfRelease, wipeLjwgl, wipeLibraries, prettyPrint);
                 generator.run(dependencies);
             });
         });
@@ -73,9 +99,8 @@ public final class JsonGeneratorPlugin implements Plugin<Project> {
     }
 
     private String[] determineProperties(Project project, boolean exists) {
-        final String[] temp = new String[3];
+        final String[] temp = new String[6];
         if (exists) {
-
             if (project.hasProperty("json.generator.TypeOfRelease")) {
                 temp[0] = (String.valueOf(project.property("json.generator.TypeOfRelease")));
             } else {
@@ -88,18 +113,36 @@ public final class JsonGeneratorPlugin implements Plugin<Project> {
                 System.err.println("No version-property found, defaulting to latest!");
                 temp[1] = ("latest");
             }
-
             if (project.hasProperty("json.generator.Debug")) {
-                System.err.println("Debug mode was enabled!");
                 temp[2] = (String.valueOf(project.property("json.generator.Debug")));
+                if (temp[2].equalsIgnoreCase("true")) System.err.println("Debug mode was enabled!");
             } else {
-                temp[2] = ("false");
+                temp[2] = "false";
             }
+            if (project.hasProperty("json.generator.WipeLwjgl")) {
+                temp[3] = (String.valueOf(project.property("json.generator.WipeLwjgl")));
+            } else {
+                temp[3] = "false";
+            }
+            if (project.hasProperty("json.generator.WipeLibraries")) {
+                temp[4] = (String.valueOf(project.property("json.generator.WipeLibraries")));
+            } else {
+                temp[4] = "false";
+            }
+            if (project.hasProperty("json.generator.PrettyPrint")) {
+                temp[5] = (String.valueOf(project.property("json.generator.PrettyPrint")));
+            } else {
+                temp[5] = "false";
+            }
+
         } else {
             System.err.println("No gradle.properties file found! Falling back to default settings!");
             temp[0] = "release";
             temp[1] = "latest";
             temp[2] = "false";
+            temp[3] = "false";
+            temp[4] = "false";
+            temp[5] = "false";
         }
         return temp;
     }
@@ -109,7 +152,7 @@ public final class JsonGeneratorPlugin implements Plugin<Project> {
         project.getRepositories().forEach(temp -> {
             if (temp instanceof MavenArtifactRepository repo) {
                 if (repo.getUrl().toString().startsWith("file")) return;
-                if (DEBUG) System.out.println(repo.getUrl());
+                if (DEBUG) System.out.println("Found repository: " + repo.getUrl());
 
 
                 final ConcurrentHashMap<Artifact, CompletableFuture<URL>> futures = new ConcurrentHashMap<>();
@@ -139,16 +182,6 @@ public final class JsonGeneratorPlugin implements Plugin<Project> {
                         throw new RuntimeException(e);
                     }
                 }
-//                service.shutdown();
-//                try {
-//                    if (!(service.awaitTermination(3, TimeUnit.MINUTES))) {
-//                        System.err.println("Tasks haven't been finished in time, aborting!");
-//                        return;
-//                    }
-//                } catch (InterruptedException e) {
-//                    System.err.println("Failed executing all tasks, aborting!");
-//                    return;
-//                }
             }
         });
 
@@ -161,7 +194,7 @@ public final class JsonGeneratorPlugin implements Plugin<Project> {
         }
     }
 
-    private void execute(Configuration configuration) {
+    private void execute(Configuration configuration, List<String> excluded) {
         if (!configuration.getName().equals("runtimeClasspath")) return;
 
         if (DEBUG) {
@@ -172,18 +205,31 @@ public final class JsonGeneratorPlugin implements Plugin<Project> {
         // Get the resolved configuration
         ResolvedConfiguration resolvedConfiguration = configuration.getResolvedConfiguration();
 
+        if (DEBUG) {
+            System.out.println("Exluded dependencies: ");
+            excluded.forEach(System.out::println);
+            System.out.println("-------------------");
+        }
+
         // Iterate over the resolved dependencies
         for (ResolvedDependency resolvedDependency : resolvedConfiguration.getFirstLevelModuleDependencies()) {
-
-
-            if (DEBUG) {
-                System.out.println("Resolved Dependency: " + resolvedDependency.getModuleGroup() + ":" + resolvedDependency.getModuleName() + ":" + resolvedDependency.getModuleVersion());
+            final String resolvedString1 = resolvedDependency.getModuleGroup() + ":" + resolvedDependency.getModuleName() + ":" + resolvedDependency.getModuleVersion();
+            final String resolvedString2 = resolvedDependency.getModuleGroup() + ":" + resolvedDependency.getModuleName();
+            if (excluded.contains(resolvedString1)) {
+                if (DEBUG) System.out.println("excluded1");
+                continue;
+            } else if (excluded.contains(resolvedString2)) {
+                if (DEBUG) System.out.println("excluded2");
+                continue;
             }
 
+            if (DEBUG) {
+                System.out.println("Resolved Dependency: " + resolvedString1);
+            }
 
             for (ResolvedArtifact artifact : resolvedDependency.getAllModuleArtifacts()) {
-                if (DEBUG) System.out.println("Artifact: " + artifact.getExtension());
-                if (!artifact.getExtension().equals("jar")) continue;
+                if (DEBUG) System.out.println("Extension: " + artifact.getExtension());
+                if (!Objects.equals(artifact.getExtension(), "jar")) continue;
                 Artifact dependency = new Artifact(resolvedDependency.getModuleGroup(), resolvedDependency.getModuleName(), resolvedDependency.getModuleVersion(), "jar");
                 dependenciesAndFiles.putIfAbsent(dependency, artifact.getFile());
             }

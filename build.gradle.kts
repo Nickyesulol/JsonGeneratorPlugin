@@ -6,11 +6,9 @@ plugins {
 
 }
 
-
-
-buildscript {
+jsonGenerator {
+    excludedDependencies = listOf("com.google.code.gson:gson")
 }
-
 
 group = "dev.skidfucker"
 version = "1.0"
@@ -22,7 +20,7 @@ repositories {
 
 dependencies {
     implementation("com.google.code.gson:gson:2.10.1");
-    implementation("org.projectlombok:lombok:1.18.30")
+//    implementation("org.projectlombok:lombok:1.18.30")
     implementation(gradleApi())
     testImplementation(gradleTestKit())
     testImplementation(platform("org.junit:junit-bom:5.9.1"))

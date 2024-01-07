@@ -1,10 +1,7 @@
 package dev.skidfucker.util;
 
-import org.gradle.internal.impldep.jakarta.xml.bind.DatatypeConverter;
-
 import java.nio.file.Files;
 import java.security.MessageDigest;
-import java.util.Map;
 import java.util.concurrent.Callable;
 
 public class InformationRetriever implements Callable<BestArtifact> {
@@ -21,7 +18,10 @@ public class InformationRetriever implements Callable<BestArtifact> {
         MessageDigest md = MessageDigest.getInstance("SHA-1");
         md.update(Files.readAllBytes(artifact.file().toPath()));
         byte[] digest = md.digest();
-        String sha1 = DatatypeConverter.printHexBinary(digest);
-        return new BestArtifact(artifact, sha1, Files.size(artifact.file().toPath()));
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < digest.length; i++) {
+            sb.append(Integer.toString((digest[i] & 0xff) + 0x100, 16).substring(1));
+        }
+        return new BestArtifact(artifact, sb.toString(), Files.size(artifact.file().toPath()));
     }
 }

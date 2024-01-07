@@ -21,9 +21,6 @@ public class URLRetriever implements Callable<URL> {
         this.repo = repo;
     }
 
-    public static void main(String[] args) throws URISyntaxException, MalformedURLException {
-
-    }
 
     @Override
     public URL call() throws Exception {
